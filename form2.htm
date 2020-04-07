@@ -1,0 +1,76 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml">
+	<head>
+		<title>Formulaire de R&eacute;servation</title>	
+		<meta http-equiv="content-type" content="text/html;charset=UTF-8" />    
+		<meta name="keywords" content="" />
+		<meta http-equiv="imagetoolbar" content="no" />
+		<link rel="stylesheet" href="screen.css" media="screen" />
+	</head>
+	<body>
+	<script src="cal.js"></script>
+
+		<div id="container">
+
+	
+			<form id="form2" action="/" method="post">	
+			
+			
+				<fieldset><legend>Formulaire de r&eacute;servation</legend>
+					<p >
+						<label for="chambre">Classe de la chambre</label>
+						<select name="chambre" id="chambre" >
+							<option value="classe simple">Classe simple</option>
+							<option value="classe moyenne">Classe moyenne</option>
+							<option value="classe confort">Classe confort</option>
+							<option value="classe grand-confort">Classe grand-confort</option>
+						</select>
+					</p>
+					
+					<p>
+						
+						<label for="arriv�e">Arriv&eacute;e</label>
+						<center><input type="text" style="cursor: pointer" onclick="new calendar(this);" value="Du :" id="dateDebut" /></center>
+					</p>	
+					<p>	
+						<label for="depard">D&eacute;pard</label>
+						<center><input type="text" style="cursor: pointer" onclick="new calendar(this);" value="Au :" id="dateFin" /></center>	
+
+					</p>
+					<p>
+						<label>Nombre de personnes</label>
+						<select name="nbrp" id="nbrp">
+							<option>01</option>
+							<option>02</option>
+							<option>03</option>
+							<option>04</option>
+							<option>05</option>
+							<option>06</option>
+							<option>07</option>
+							<option>08</option>
+							<option>09</option>
+							<option>10</option>
+							<option>11</option>
+							<option>12</option>
+							<option>13</option>
+							<option>14</option>
+							<option>15</option>
+							<option>16</option>
+							<option>17</option>
+							<option>18</option>
+							<option>19</option>
+							<option>20</option>
+						</select>
+					</p>
+					
+					<p class="submit"><button type="submit"><center>Verifier la disponibilit�</center></button></p>		
+								
+				</fieldset>					
+							
+			</form>	
+			
+			
+		</div>
+
+	</body>
+</html>

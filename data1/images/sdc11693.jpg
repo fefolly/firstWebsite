@@ -1,0 +1,1548 @@
+# -*- coding: utf-8 -*-
+###############################################################################
+#
+# configglue -- glue for your apps' configuration
+#
+# A library for simple, DRY configuration of applications
+#
+# (C) 2009--2011 by Canonical Ltd.
+# by John R. Lenton <john.lenton@canonical.com>
+# and Ricardo Kirkner <ricardo.kirkner@canonical.com>
+#
+# Released under the BSD License (see the file LICENSE)
+#
+# For bug reports, support, and new releases: http://launchpad.net/configglue
+#
+###############################################################################
+
+import unittest
+import os
+import sys
+from StringIO import StringIO
+from optparse import (
+    OptionConflictError,
+    OptionParser,
+)
+
+from mock import (
+    Mock,
+    patch,
+)
+
+from configglue.glue import (
+    configglue,
+    schemaconfigglue,
+)
+from configglue.parser import (
+    NoSectionError,
+    SchemaConfigParser,
+)
+from configglue.schema import (
+    DictOption,
+    IntOption,
+    Option,
+    Schema,
+    Section,
+    StringOption,
+)
+
+
+# backwards compatibility
+if not hasattr(patch, 'object'):
+    # mock < 0.8
+    from mock import patch_object
+    patch.object = patch_object
+
+
+class TestOption(unittest.TestCase):
+    cls = Option
+
+    def test_repr_name(self):
+        """Test Option repr with name."""
+        opt = self.cls()
+        expected = "<{0}>".format(self.cls.__name__)
+        self.assertEqual(repr(opt), expected)
+
+        opt = self.cls(name='name')
+        expected = "<{0} name>".format(self.cls.__name__)
+        self.assertEqual(repr(opt), expected)
+
+        sect = Section(name='sect')
+        opt = self.cls(name='name', section=sect)
+        expected = "<{0} sect.name>".format(self.cls.__name__)
+        self.assertEqual(repr(opt), expected)
+
+    def test_repr_extra(self):
+        """Test Option repr with other attributes."""
+        opt = self.cls(name='name', raw=True)
+        expected = "<{0} name raw>".format(self.cls.__name__)
+        self.assertEqual(repr(opt), expected)
+
+        opt = self.cls(name='name', fatal=True)
+        expected = "<{0} name fatal>".format(self.cls.__name__)
+        self.assertEqual(repr(opt), expected)
+
+        opt = self.cls(name='name', raw=True, fatal=True)
+        expected = "<{0} name raw fatal>".format(self.cls.__name__)
+        self.assertEqual(repr(opt), expected)
+
+    def test_parse(self):
+        """Test Option parse."""
+        opt = self.cls()
+        self.assertRaises(NotImplementedError, opt.parse, '')
+
+    def test_equal(self):
+        """Test Option equality."""
+        opt1 = self.cls()
+        opt2 = self.cls(name='name', raw=True)
+
+        self.assertEqual(opt1, self.cls())
+        self.assertEqual(opt2, self.cls(name='name', raw=True))
+        self.assertNotEqual(opt1, opt2)
+        self.assertNotEqual(opt1, None)
+
+
+class TestSection(unittest.TestCase):
+    cls = Section
+
+    def test_repr_name(self):
+        """Test Section repr method."""
+        sect = self.cls()
+        expected = "<{0}>".format(self.cls.__name__)
+        self.assertEqual(repr(sect), expected)
+
+        sect = self.cls(name='sect')
+        expected = "<{0} sect>".format(self.cls.__name__)
+        self.assertEqual(repr(sect), expected)
+
+    def test_equal(self):
+        """Test Section equality."""
+        sec1 = self.cls()
+        sec2 = self.cls(name='sec2')
+
+        self.assertEqual(sec1, self.cls())
+        self.assertEqual(sec2, self.cls(name='sec2'))
+        self.assertNotEqual(sec1, sec2)
+
+    def test_has_option(self):
+        """Test Section has_option method."""
+        class MySection(self.cls):
+            foo = IntOption()
+
+        sec1 = MySection()
+        self.assertTrue(sec1.has_option('foo'))
+        self.assertFalse(sec1.has_option('bar'))
+
+
+class TestSchemaConfigGlue(unittest.TestCase):
+    def setUp(self):
+        class MySchema(Schema):
+            class foo(Section):
+                bar = IntOption()
+
+            baz = IntOption(help='The baz option')
+
+        self.parser = SchemaConfigParser(MySchema())
+
+    def test_glue_no_op(self):
+        """Test schemaconfigglue with the default OptionParser value."""
+        config = StringIO("[__main__]\nbaz=1")
+        self.parser.readfp(config)
+        self.assertEqual(self.parser.values(),
+            {'foo': {'bar': 0}, '__main__': {'baz': 1}})
+
+        op, options, args = schemaconfigglue(self.parser, argv=['--baz', '2'])
+        self.assertEqual(self.parser.values(),
+            {'foo': {'bar': 0}, '__main__': {'baz': 2}})
+
+    def test_glue_no_argv(self):
+        """Test schemaconfigglue with the default argv value."""
+        config = StringIO("[__main__]\nbaz=1")
+        self.parser.readfp(config)
+        self.assertEqual(self.parser.values(),
+            {'foo': {'bar': 0}, '__main__': {'baz': 1}})
+
+        _argv, sys.argv = sys.argv, []
+        try:
+            op, options, args = schemaconfigglue(self.parser)
+            self.assertEqual(self.parser.values(),
+                {'foo': {'bar': 0}, '__main__': {'baz': 1}})
+        finally:
+            sys.argv = _argv
+
+    def test_glue_section_option(self):
+        """Test schemaconfigglue overriding one option."""
+        config = StringIO("[foo]\nbar=1")
+        self.parser.readfp(config)
+        self.assertEqual(self.parser.values(),
+            {'foo': {'bar': 1}, '__main__': {'baz': 0}})
+
+        op, options, args = schemaconfigglue(self.parser,
+                                             argv=['--foo_bar', '2'])
+        self.assertEqual(self.parser.values(),
+                         {'foo': {'bar': 2}, '__main__': {'baz': 0}})
+
+    def test_glue_missing_section(self):
+        """Test schemaconfigglue with missing section."""
+        class MySchema(Schema):
+            foo = DictOption()
+
+        config = StringIO("[__main__]\nfoo = bar")
+        parser = SchemaConfigParser(MySchema())
+        parser.readfp(config)
+
+        # hitting the parser directly raises an exception
+        self.assertRaises(NoSectionError, parser.values)
+        self.assertFalse(parser.is_valid())
+
+        # which is nicely handled by the glue code, so as not to crash it
+        op, options, args = schemaconfigglue(parser)
+
+        # there is no value for 'foo' due to the missing section
+        self.assertEqual(options, {'foo': None})
+
+    def test_glue_json_dict(self):
+        class MySchema(Schema):
+            foo = DictOption()
+
+        parser = SchemaConfigParser(MySchema())
+        op, options, args = schemaconfigglue(parser,
+            argv=['--foo', '{"bar": "baz"}'])
+
+        self.assertEqual(options, {'foo': '{"bar": "baz"}'})
+        self.assertEqual(parser.values(),
+            {'__main__': {'foo': {'bar': 'baz'}}})
+
+    @patch('configglue.glue.os')
+    def test_glue_environ(self, mock_os):
+        mock_os.environ = {'CONFIGGLUE_FOO_BAR': '42', 'CONFIGGLUE_BAZ': 3}
+        config = StringIO("[foo]\nbar=1")
+        self.parser.readfp(config)
+
+        _argv, sys.argv = sys.argv, ['prognam']
+        try:
+            op, options, args = schemaconfigglue(self.parser)
+            self.assertEqual(self.parser.values(),
+                {'foo': {'bar': 42}, '__main__': {'baz': 3}})
+        finally:
+            sys.argv = _argv
+
+    @patch('configglue.glue.os')
+    def test_glue_environ_bad_name(self, mock_os):
+        mock_os.environ = {'FOO_BAR': 2, 'BAZ': 3}
+        config = StringIO("[foo]\nbar=1")
+        self.parser.readfp(config)
+
+        _argv, sys.argv = sys.argv, ['prognam']
+        try:
+            op, options, args = schemaconfigglue(self.parser)
+            self.assertEqual(self.parser.values(),
+                {'foo': {'bar': 1}, '__main__': {'baz': 0}})
+        finally:
+            sys.argv = _argv
+
+    def test_glue_environ_precedence(self):
+        with patch.object(os, 'environ',
+            {'CONFIGGLUE_FOO_BAR': '42', 'BAR': '1'}):
+
+            config = StringIO("[foo]\nbar=$BAR")
+            self.parser.readfp(config)
+
+            _argv, sys.argv = sys.argv, ['prognam']
+            try:
+                op, options, args = schemaconfigglue(self.parser)
+                self.assertEqual(self.parser.get('foo', 'bar'), 42)
+            finally:
+                sys.argv = _argv
+
+    def test_glue_environ_precedence_fatal_option(self):
+        class MySchema(Schema):
+            foo = IntOption(fatal=True)
+
+        parser = SchemaConfigParser(MySchema())
+
+        with patch.object(os, 'environ', {'CONFIGGLUE_FOO': '42'}):
+            _argv, sys.argv = sys.argv, ['prognam']
+            try:
+                op, options, args = schemaconfigglue(parser)
+                self.assertEqual(parser.get('__main__', 'foo'), 42)
+            finally:
+                sys.argv = _argv
+
+    def test_glue_environ_precedence_null_option(self):
+        class MySchema(Schema):
+            foo = StringOption(null=True)
+
+        parser = SchemaConfigParser(MySchema())
+
+        with patch.object(os, 'environ', {'CONFIGGLUE_FOO': '42'}):
+            _argv, sys.argv = sys.argv, ['prognam']
+            try:
+                op, options, args = schemaconfigglue(parser)
+                self.assertEqual(parser.get('__main__', 'foo'), '42')
+            finally:
+                sys.argv = _argv
+
+    def test_glue_environ_precedence_null_and_fatal_option(self):
+        class MySchema(Schema):
+            foo = StringOption(null=True, fatal=True)
+
+        parser = SchemaConfigParser(MySchema())
+
+        with patch.object(os, 'environ', {'CONFIGGLUE_FOO': '42'}):
+            _argv, sys.argv = sys.argv, ['prognam']
+            try:
+                op, options, args = schemaconfigglue(parser)
+                self.assertEqual(parser.get('__main__', 'foo'), '42')
+            finally:
+                sys.argv = _argv
+
+    def test_ambiguous_option(self):
+        """Test schemaconfigglue when an ambiguous option is specified."""
+        class MySchema(Schema):
+            class foo(Section):
+                baz = IntOption()
+
+            class bar(Section):
+                baz = IntOption()
+
+        config = StringIO("[foo]\nbaz=1")
+        parser = SchemaConfigParser(MySchema())
+        parser.readfp(config)
+        self.assertEqual(parser.values('foo'), {'baz': 1})
+        self.assertEqual(parser.values('bar'), {'baz': 0})
+
+        op, options, args = schemaconfigglue(
+            parser, argv=['--bar_baz', '2'])
+        self.assertEqual(parser.values('foo'), {'baz': 1})
+        self.assertEqual(parser.values('bar'), {'baz': 2})
+
+    def test_help(self):
+        """Test schemaconfigglue with --help."""
+        config = StringIO("[foo]\nbar=1")
+        self.parser.readfp(config)
+        self.assertEqual(self.parser.values(),
+            {'foo': {'bar': 1}, '__main__': {'baz': 0}})
+
+        # replace stdout to capture its value
+        stdout = StringIO()
+        _stdout = sys.stdout
+        sys.stdout = stdout
+        # call the method and assert its value
+        self.assertRaises(SystemExit, schemaconfigglue, self.parser,
+            argv=['--help'])
+        # replace stdout again to cleanup
+        sys.stdout = _stdout
+
+        # assert the value of stdout is correct
+        stdout.seek(0)
+        output = stdout.read()
+        self.assertTrue(output.startswith('Usage:'))
+
+    def test_help_with_fatal(self):
+        """Test schemaconfigglue with --help and an undefined fatal option."""
+        class MySchema(Schema):
+            foo = IntOption(fatal=True)
+
+        self.parser = SchemaConfigParser(MySchema())
+
+        # replace stdout to capture its value
+        stdout = StringIO()
+        _stdout = sys.stdout
+        sys.stdout = stdout
+        # call the method and assert its value
+        self.assertRaises(SystemExit, schemaconfigglue, self.parser,
+            argv=['--help'])
+        # replace stdout again to cleanup
+        sys.stdout = _stdout
+
+        # assert the value of stdout is correct
+        stdout.seek(0)
+        output = stdout.read()
+        self.assertTrue(output.startswith('Usage:'))
+
+    def test_parser_set_with_encoding(self):
+        """Test schemaconfigglue override an option with a non-ascii value."""
+        class MySchema(Schema):
+            foo = StringOption()
+
+        parser = SchemaConfigParser(MySchema())
+        op, options, args = schemaconfigglue(
+            parser, argv=['--foo', 'fóobâr'])
+        self.assertEqual(parser.get('__main__', 'foo', parse=False),
+            'fóobâr')
+        self.assertEqual(parser.get('__main__', 'foo'), 'fóobâr')
+
+    def test_option_short_name(self):
+        """Test schemaconfigglue support for short option names."""
+        class MySchema(Schema):
+            foo = IntOption(short_name='f')
+
+        parser = SchemaConfigParser(MySchema())
+        op, options, args = schemaconfigglue(
+            parser, argv=['-f', '42'])
+        self.assertEqual(parser.get('__main__', 'foo'), 42)
+
+    def test_option_conflicting_short_name(self):
+        """Test schemaconfigglue with conflicting short option names."""
+        class MySchema(Schema):
+            foo = IntOption(short_name='f')
+            flup = StringOption(short_name='f')
+
+        parser = SchemaConfigParser(MySchema())
+        self.assertRaises(OptionConflictError, schemaconfigglue, parser,
+            argv=['-f', '42'])
+
+    def test_option_specified_twice(self):
+        """Test schemaconfigglue with option name specified twice."""
+        class MySchema(Schema):
+            foo = IntOption(short_name='f')
+
+        parser = SchemaConfigParser(MySchema())
+        op, options, args = schemaconfigglue(
+            parser, argv=['-f', '42', '--foo', '24'])
+        self.assertEqual(parser.get('__main__', 'foo'), 24)
+        op, options, args = schemaconfigglue(
+            parser, argv=['-f', '24', '--foo', '42'])
+        self.assertEqual(parser.get('__main__', 'foo'), 42)
+
+    def test_fatal_option_with_config(self):
+        class MySchema(Schema):
+            foo = IntOption(fatal=True)
+
+        config = StringIO("[__main__]\nfoo=1")
+        parser = SchemaConfigParser(MySchema())
+        parser.readfp(config)
+
+        op, options, args = schemaconfigglue(parser)
+        self.assertEqual(parser.values(), {'__main__': {'foo': 1}})
+
+
+class ConfigglueTestCase(unittest.TestCase):
+    @patch('configglue.glue.SchemaConfigParser')
+    @patch('configglue.glue.schemaconfigglue')
+    def test_configglue_no_errors(self, mock_schemaconfigglue,
+        mock_schema_parser):
+        """Test configglue when no errors occur."""
+        # prepare mocks
+        expected_schema_parser = Mock()
+        expected_schema_parser.is_valid.return_value = (True, None)
+        expected_option_parser = Mock()
+        expected_options = Mock()
+        expected_args = Mock()
+        mock_schemaconfigglue.return_value = (expected_option_parser,
+            expected_options, expected_args)
+        mock_schema_parser.return_value = expected_schema_parser
+
+        # define the inputs
+        class MySchema(Schema):
+            foo = IntOption()
+
+        configs = ['config.ini']
+
+        # call the function under test
+        glue = configglue(MySchema, configs)
+
+        # schema_parse is a SchemaConfigParser, initialized with MySchema
+        # and fed with the configs file list
+        self.assertEqual(glue.schema_parser, expected_schema_parser)
+        mock_schema_parser.assert_called_with(MySchema())
+        mock_schema_parser.return_value.read.assert_called_with(configs)
+        # the other attributes are the result of calling schemaconfigglue
+        mock_schemaconfigglue.assert_called_with(expected_schema_parser,
+            op=None)
+        self.assertEqual(glue.option_parser, expected_option_parser)
+        self.assertEqual(glue.options, expected_options)
+        self.assertEqual(glue.args, expected_args)
+
+    @patch('configglue.glue.SchemaConfigParser')
+    @patch('configglue.glue.schemaconfigglue')
+    def test_configglue_with_errors(self, mock_schemaconfigglue,
+        mock_schema_parser):
+        """Test configglue when an error happens."""
+        # prepare mocks
+        expected_schema_parser = Mock()
+        expected_schema_parser.is_valid.return_value = (False, ['some error'])
+        expected_option_parser = Mock()
+        expected_options = Mock()
+        expected_args = Mock()
+        mock_schemaconfigglue.return_value = (expected_option_parser,
+            expected_options, expected_args)
+        mock_schema_parser.return_value = expected_schema_parser
+
+        # define the inputs
+        class MySchema(Schema):
+            foo = IntOption()
+
+        configs = ['config.ini']
+
+        # call the function under test
+        glue = configglue(MySchema, configs)
+
+        # schema_parse is a SchemaConfigParser, initialized with MySchema
+        # and fed with the configs file list
+        self.assertEqual(glue.schema_parser, expected_schema_parser)
+        mock_schema_parser.assert_called_with(MySchema())
+        mock_schema_parser.return_value.read.assert_called_with(configs)
+        # the other attributes are the result of calling schemaconfigglue
+        mock_schemaconfigglue.assert_called_with(expected_schema_parser,
+            op=None)
+        self.assertEqual(glue.option_parser, expected_option_parser)
+        expected_option_parser.error.assert_called_with('some error')
+        self.assertEqual(glue.options, expected_options)
+        self.assertEqual(glue.args, expected_args)
+
+    @patch('configglue.glue.SchemaConfigParser')
+    @patch('configglue.glue.schemaconfigglue')
+    def test_configglue_with_options(self, mock_schemaconfigglue,
+        mock_schema_parser):
+        """Test configglue with a custom OptionParser."""
+        # define the inputs
+        class MySchema(Schema):
+            foo = IntOption()
+
+        configs = ['config.ini']
+
+        op = OptionParser(usage='foo')
+
+        # prepare mocks
+        expected_schema_parser = Mock()
+        expected_schema_parser.is_valid.return_value = (True, None)
+        expected_args = Mock()
+        mock_schemaconfigglue.return_value = (op,
+            op.values, expected_args)
+        mock_schema_parser.return_value = expected_schema_parser
+
+        # call the function under test
+        glue = configglue(MySchema, configs, op=op)
+
+        # schema_parse is a SchemaConfigParser, initialized with MySchema
+        # and fed with the configs file list
+        self.assertEqual(glue.schema_parser, expected_schema_parser)
+        mock_schema_parser.assert_called_with(MySchema())
+        mock_schema_parser.return_value.read.assert_called_with(configs)
+        # the other attributes are the result of calling schemaconfigglue
+        mock_schemaconfigglue.assert_called_with(expected_schema_parser,
+            op=op)
+        self.assertEqual(glue.option_parser, op)
+        self.assertEqual(glue.options, op.values)
+        self.assertEqual(glue.args, expected_args)
+
+    @patch('configglue.parser.SchemaConfigParser.is_valid')
+    def test_configglue_no_validate(self, mock_is_valid):
+        """Test configglue with validation disabled."""
+        mock_is_valid.return_value = (True, [])
+
+        configglue(Schema, [], validate=False)
+
+        # validation was not invoked
+        self.assertEqual(mock_is_valid.called, False)
+
+    @patch('configglue.parser.SchemaConfigParser.is_valid')
+    def test_configglue_validate(self, mock_is_valid):
+        """Test configglue with validation enabled."""
+        mock_is_valid.return_value = (True, [])
+
+        configglue(Schema, [], validate=True)
+
+        # validation was invoked
+        self.assertEqual(mock_is_valid.called, True)
+
+    @patch('configglue.parser.SchemaConfigParser.is_valid')
+    def test_configglue_validate_default_value(self, mock_is_valid):
+        """Test configglue validation default."""
+        mock_is_valid.return_value = (True, [])
+
+        configglue(Schema, [])
+
+        # validation was not invoked
+        self.assertEqual(mock_is_valid.called, False)
+
+    @patch('configglue.parser.SchemaConfigParser.is_valid')
+    def test_configglue_validate_from_options(self, mock_is_valid):
+        """Test configglue with validation from options."""
+        mock_is_valid.return_value = (True, [])
+
+        op = OptionParser()
+        op.add_option('--validate', dest='validate', action='store_true')
+        with patch.object(sys, 'argv', ['foo', '--validate']):
+            configglue(Schema, [], op=op)
+
+        self.assertEqual(mock_is_valid.called, True)
+
+    @patch('configglue.parser.SchemaConfigParser.is_valid')
+    def test_configglue_validate_without_option(self, mock_is_valid):
+        """Test configglue with validation from options."""
+        mock_is_valid.return_value = (True, [])
+
+        op = OptionParser()
+        with patch.object(sys, 'argv', ['foo']):
+            configglue(Schema, [], op=op)
+
+        self.assertEqual(mock_is_valid.called, False)
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                ###############################################################################
+#
+# configglue -- glue for your apps' configuration
+#
+# A library for simple, DRY configuration of applications
+#
+# (C) 2009--2011 by Canonical Ltd.
+# by John R. Lenton <john.lenton@canonical.com>
+# and Ricardo Kirkner <ricardo.kirkner@canonical.com>
+#
+# Released under the BSD License (see the file LICENSE)
+#
+# For bug reports, support, and new releases: http://launchpad.net/configglue
+#
+###############################################################################
+import os
+import user
+from optparse import OptionParser
+from unittest import TestCase
+
+from mock import (
+    Mock,
+    patch,
+)
+
+from configglue.app.base import (
+    App,
+    Config,
+)
+from configglue.app.plugin import (
+    Plugin,
+    PluginManager,
+)
+from configglue.schema import (
+    IntOption,
+    Schema,
+)
+
+
+def make_app(name=None, schema=None, plugin_manager=None, validate=False,
+        parser=None):
+    # patch sys.argv so that nose can be run with extra options
+    # without conflicting with the schema validation
+    # patch sys.stderr to prevent spurious output
+    mock_sys = Mock()
+    mock_sys.argv = ['foo.py']
+    if validate:
+        mock_sys.argv.append('--validate')
+    with patch('configglue.glue.sys', mock_sys):
+        with patch('configglue.app.base.sys.stderr'):
+            app = App(name=name, schema=schema, plugin_manager=plugin_manager,
+                parser=parser)
+    return app
+
+
+def make_config(app=None):
+    if app is None:
+        app = make_app()
+    # patch sys.argv so that nose can be run with extra options
+    # without conflicting with the schema validation
+    mock_sys = Mock()
+    mock_sys.argv = ['foo.py']
+    with patch('configglue.glue.sys', mock_sys):
+        config = Config(app)
+    return config
+
+
+class ConfigTestCase(TestCase):
+    def get_xdg_config_dirs(self):
+        xdg_config_home = os.environ.get('XDG_CONFIG_HOME',
+            os.path.join(user.home, '.config'))
+        xdg_config_dirs = ([xdg_config_home] + 
+            os.environ.get('XDG_CONFIG_DIRS', '/etc/xdg').split(':'))
+        return xdg_config_dirs
+
+    @patch('configglue.app.base.merge')
+    @patch('configglue.app.base.Config.get_config_files')
+    @patch('configglue.app.base.configglue')
+    def test_constructor(self, mock_configglue,
+        mock_get_config_files, mock_merge):
+
+        app = App()
+        config = Config(app)
+
+        self.assertEqual(config.schema, mock_merge.return_value)
+        self.assertEqual(config.glue, mock_configglue.return_value)
+        mock_configglue.assert_called_with(
+            mock_merge.return_value, mock_get_config_files.return_value,
+            op=app.parser)
+
+    def test_glue_valid_config(self):
+        config = make_config()
+        self.assertEqual(config.glue.schema_parser.is_valid(), True)
+
+    def test_glue_validate_invalid_config(self):
+        class MySchema(Schema):
+            foo = IntOption(fatal=True)
+
+        self.assertRaises(SystemExit, make_app, schema=MySchema,
+            validate=True)
+
+    def test_glue_no_validate_invalid_config(self):
+        class MySchema(Schema):
+            foo = IntOption(fatal=True)
+        # no explicit assertion as we just want to verify creating the
+        # app doesn't raise any exception if validation is turned off
+        make_app(schema=MySchema)
+
+    def test_get_config_files(self):
+        app = make_app()
+        config = make_config(app=app)
+        self.assertEqual(config.get_config_files(app), [])
+
+    @patch('xdg.BaseDirectory.os.path.exists')
+    def test_get_config_files_full_hierarchy(self, mock_path_exists):
+        mock_path_exists.return_value = True
+
+        config_files = []
+        for path in reversed(self.get_xdg_config_dirs()):
+            config_files.append(os.path.join(path, 'myapp', 'myapp.cfg'))
+        config_files.append('./local.cfg')
+
+        app = make_app(name='myapp')
+        config = make_config(app=app)
+        self.assertEqual(config.get_config_files(app=app), config_files)
+
+    @patch('xdg.BaseDirectory.os.path.exists')
+    def test_get_config_files_with_plugins_full_hierarchy(self,
+        mock_path_exists):
+        mock_path_exists.return_value = True
+
+        class Foo(Plugin):
+            enabled = True
+
+        config_files = []
+        for path in reversed(self.get_xdg_config_dirs()):
+            config_files.append(os.path.join(path, 'myapp', 'myapp.cfg'))
+            config_files.append(os.path.join(path, 'myapp', 'foo.cfg'))
+        config_files.append('./local.cfg')
+
+        app = make_app(name='myapp')
+        app.plugins.register(Foo)
+        config = make_config(app=app)
+        self.assertEqual(config.get_config_files(app=app), config_files)
+
+
+class AppTestCase(TestCase):
+    def test_custom_name(self):
+        app = make_app(name='myapp')
+        self.assertEqual(app.name, 'myapp')
+
+    @patch('configglue.app.base.sys')
+    def test_default_name(self, mock_sys):
+        mock_sys.argv = ['foo.py']
+        app = make_app()
+        self.assertEqual(app.name, 'foo')
+
+    def test_default_plugin_manager(self):
+        app = make_app()
+        self.assertEqual(type(app.plugins), PluginManager)
+
+    def test_custom_plugin_manager(self):
+        mock_plugin_manager = Mock()
+        mock_plugin_manager.schemas = []
+        app = make_app(plugin_manager=mock_plugin_manager)
+        self.assertEqual(app.plugins, mock_plugin_manager)
+
+    @patch('configglue.app.base.Config')
+    def test_config(self, mock_config):
+        app = make_app()
+        self.assertEqual(app.config, mock_config.return_value)
+
+    def test_default_parser(self):
+        app = make_app()
+        # parser is configured
+        self.assertNotEqual(app.parser, None)
+        self.assertEqual(app.config.glue.option_parser, app.parser)
+        # there is only one option by default: --validate
+        self.assertEqual(app.parser.values.__dict__, {'validate': False})
+
+    def test_custom_parser(self):
+        custom_parser = OptionParser()
+        custom_parser.add_option('-f', '--foo')
+        app = make_app(parser=custom_parser)
+        # parser is configured
+        self.assertEqual(app.parser, custom_parser)
+        self.assertEqual(app.config.glue.option_parser, custom_parser)
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    ###############################################################################
+#
+# configglue -- glue for your apps' configuration
+#
+# A library for simple, DRY configuration of applications
+#
+# (C) 2009--2011 by Canonical Ltd.
+# by John R. Lenton <john.lenton@canonical.com>
+# and Ricardo Kirkner <ricardo.kirkner@canonical.com>
+#
+# Released under the BSD License (see the file LICENSE)
+#
+# For bug reports, support, and new releases: http://launchpad.net/configglue
+#
+###############################################################################
+from unittest import TestCase
+
+from configglue.app.plugin import (
+    Plugin,
+    PluginManager,
+)
+from configglue.schema import Schema
+
+
+def make_plugins(available=None, enabled=None):
+    plugins = PluginManager()
+    if available:
+        for plugin in available:
+            plugins.register(plugin)
+    if enabled is not None:
+        for plugin in enabled:
+            plugins.enable(plugin)
+    return plugins
+
+
+class Foo(Plugin):
+    pass
+
+
+class PluginTestCase(TestCase):
+    def test_defaults(self):
+        plugin = Plugin()
+        self.assertEqual(plugin.schema, Schema)
+        self.assertEqual(plugin.enabled, False)
+
+
+class PluginManagerTestCase(TestCase):
+    def test_constructor(self):
+        plugins = make_plugins()
+        self.assertEqual(plugins.available, [])
+
+    def test_enabled(self):
+        plugins = make_plugins(available=[Foo], enabled=[Foo])
+        self.assertEqual(plugins.enabled, [Foo])
+
+    def test_enable(self):
+        plugins = make_plugins(available=[Foo])
+        self.assertEqual(Foo.enabled, False)
+        self.assertTrue(Foo in plugins.available)
+        self.assertFalse(Foo in plugins.enabled)
+
+        plugins.enable(Foo)
+        self.assertEqual(Foo.enabled, True)
+        self.assertTrue(Foo in plugins.enabled)
+
+    def test_disable(self):
+        plugins = make_plugins(available=[Foo], enabled=[Foo])
+        self.assertEqual(Foo.enabled, True)
+        self.assertTrue(Foo in plugins.enabled)
+        self.assertTrue(Foo in plugins.enabled)
+
+        plugins.disable(Foo)
+
+        self.assertEqual(Foo.enabled, False)
+        self.assertFalse(Foo in plugins.enabled)
+
+    def test_schemas(self):
+        class Bar(Plugin):
+            pass
+        plugins = make_plugins(available=[Foo, Bar], enabled=[Foo])
+        self.assertEqual(plugins.schemas, [Foo.schema])
+
+    def test_load(self):
+        plugins = make_plugins()
+        self.assertEqual(plugins.load(), [])
+
+    def test_register(self):
+        plugins = PluginManager()
+        self.assertEqual(plugins.available, [])
+
+        plugins.register(Foo)
+        self.assertEqual(plugins.available, [Foo])
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                ###############################################################################
+#
+# configglue -- glue for your apps' configuration
+#
+# A library for simple, DRY configuration of applications
+#
+# (C) 2009--2011 by Canonical Ltd.
+# by John R. Lenton <john.lenton@canonical.com>
+# and Ricardo Kirkner <ricardo.kirkner@canonical.com>
+#
+# Released under the BSD License (see the file LICENSE)
+#
+# For bug reports, support, and new releases: http://launchpad.net/configglue
+#
+###############################################################################
+
+"""Tests! Who woulda said"""
+# Two use cases so far for this file:
+#  * make tests a package, so setup.py's "test" command finds the tests
+#  * load all the tests
+
+if __name__ == '__main__':
+    import unittest
+
+    from configglue.tests import (test_attributed, test_typed,
+                                  test_parsers, test_glue, test_glue2glue)
+
+    suite = unittest.TestSuite()
+    loader = unittest.TestLoader()
+    for module in (test_attributed, test_typed, test_parsers, test_glue,
+        test_glue2glue):
+        suite.addTest(loader.loadTestsFromModule(module))
+
+    unittest.TextTestRunner(verbosity=2).run(suite)
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    ###############################################################################
+#
+# configglue -- glue for your apps' configuration
+#
+# A library for simple, DRY configuration of applications
+#
+# (C) 2009--2011 by Canonical Ltd.
+# by John R. Lenton <john.lenton@canonical.com>
+# and Ricardo Kirkner <ricardo.kirkner@canonical.com>
+#
+# Released under the BSD License (see the file LICENSE)
+#
+# For bug reports, support, and new releases: http://launchpad.net/configglue
+#
+###############################################################################
+
+# in testfiles, putting docstrings on methods messes up with the
+# runner's output, so pylint: disable-msg=C0111
+
+import unittest
+from ConfigParser import RawConfigParser
+from StringIO import StringIO
+
+from configglue.inischema.attributed import AttributedConfigParser
+
+
+class BaseTest(unittest.TestCase):
+    """ Base class to keep common set-up """
+    def setUp(self):
+        self.config_string = '''
+[xyzzy]
+foo         = 5
+foo.banana  = yellow
+foo.mango   = orange
+foo.noise   = white
+
+bar.blah    = 23
+'''
+        self.config = AttributedConfigParser()
+        self.config.readfp(StringIO(self.config_string))
+
+
+class TestAttributed(BaseTest):
+    """ pretty basic tests of AttributedConfigParser """
+    def test_config_before_parsing_is_plain(self):
+        rawConfig = RawConfigParser()
+        rawConfig.readfp(StringIO(self.config_string))
+        self.assertEqual([(section, sorted(self.config.items(section)))
+                          for section in self.config.sections()],
+                         [(section, sorted(rawConfig.items(section)))
+                          for section in rawConfig.sections()])
+
+    def test_config_after_parsing_is_attributed(self):
+        self.config.parse_all()
+        self.assertEqual(self.config.get('xyzzy',
+                                         'foo').attrs['noise'], 'white')
+
+    def test_config_after_parsing_still_knows_about_empty_values(self):
+        self.config.parse_all()
+        self.assertTrue(self.config.get('xyzzy', 'bar').is_empty)
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      # -*- coding: utf-8 -*-
+###############################################################################
+#
+# configglue -- glue for your apps' configuration
+#
+# A library for simple, DRY configuration of applications
+#
+# (C) 2009--2011 by Canonical Ltd.
+# by John R. Lenton <john.lenton@canonical.com>
+# and Ricardo Kirkner <ricardo.kirkner@canonical.com>
+#
+# Released under the BSD License (see the file LICENSE)
+#
+# For bug reports, support, and new releases: http://launchpad.net/configglue
+#
+###############################################################################
+
+import sys
+import textwrap
+import unittest
+from StringIO import StringIO
+
+from configglue.inischema.glue import (
+    configglue,
+    ini2schema,
+)
+from configglue.glue import schemaconfigglue
+
+
+class TestGlueConvertor(unittest.TestCase):
+    def setUp(self):
+        # make sure we have a clean sys.argv so as not to have unexpected test
+        # results
+        self.old_argv = sys.argv
+        sys.argv = []
+
+    def tearDown(self):
+        # restore old sys.argv
+        sys.argv = self.old_argv
+
+    def test_empty(self):
+        s = ""
+        _, cg, _ = configglue(StringIO(s))
+        _, sg, _ = schemaconfigglue(ini2schema(StringIO(s)))
+        self.assertEqual(vars(cg), vars(sg))
+
+    def test_simple(self):
+        s = "[foo]\nbar = 42\n"
+        _, cg, _ = configglue(StringIO(s))
+        _, sg, _ = schemaconfigglue(ini2schema(StringIO(s)))
+        self.assertEqual(vars(cg), vars(sg))
+
+    def test_main(self):
+        s = "[__main__]\nbar = 42\n"
+        _, cg, _ = configglue(StringIO(s))
+        _, sg, _ = schemaconfigglue(ini2schema(StringIO(s)))
+        self.assertEqual(vars(cg), vars(sg))
+
+    def test_parser_none(self):
+        s = "[__main__]\nbar = meeeeh\nbar.parser = none"
+        _, cg, _ = configglue(StringIO(s),
+                              extra_parsers=[('none', str)])
+        _, sg, _ = schemaconfigglue(ini2schema(StringIO(s)))
+        self.assertEqual(vars(cg), vars(sg))
+
+    def test_parser_unicode(self):
+        s = textwrap.dedent("""
+            [__main__]
+            bar = zátrapa
+            bar.parser = unicode
+            bar.parser.args = utf-8
+        """)
+        _, cg, _ = configglue(StringIO(s))
+        _, sg, _ = schemaconfigglue(ini2schema(StringIO(s)))
+        self.assertEqual(vars(cg), vars(sg))
+
+    def test_parser_int(self):
+        s = "[__main__]\nbar = 42\nbar.parser = int\n"
+        _, cg, _ = configglue(StringIO(s))
+        _, sg, _ = schemaconfigglue(ini2schema(StringIO(s)))
+        self.assertEqual(vars(cg), vars(sg))
+
+    def test_parser_bool(self):
+        s = "[__main__]\nbar = true\nbar.parser = bool \n"
+        _, cg, _ = configglue(StringIO(s))
+        _, sg, _ = schemaconfigglue(ini2schema(StringIO(s)))
+        self.assertEqual(vars(cg), vars(sg))
+
+if __name__ == '__main__':
+    unittest.main()
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                ###############################################################################
+#
+# configglue -- glue for your apps' configuration
+#
+# A library for simple, DRY configuration of applications
+#
+# (C) 2009--2011 by Canonical Ltd.
+# by John R. Lenton <john.lenton@canonical.com>
+# and Ricardo Kirkner <ricardo.kirkner@canonical.com>
+#
+# Released under the BSD License (see the file LICENSE)
+#
+# For bug reports, support, and new releases: http://launchpad.net/configglue
+#
+###############################################################################
+
+# in testfiles, putting docstrings on methods messes up with the
+# runner's output, so pylint: disable-msg=C0111
+
+import sys
+import unittest
+from StringIO import StringIO
+
+from configglue.inischema.glue import configglue
+
+
+class TestBase(unittest.TestCase):
+    """ Base class to keep common set-up """
+    def setUp(self):
+        self.file = StringIO(self.ini)
+        self.old_sys_argv = sys.argv
+        sys.argv = ['']
+
+    def tearDown(self):
+        sys.argv = self.old_sys_argv
+
+
+class TestGlue(TestBase):
+    ini = '''
+[blah]
+foo.help = yadda yadda yadda
+         yadda
+foo.metavar = FOO
+foo.parser = int
+foo = 2
+'''
+    arg = '--blah_foo'
+    opt = 'blah_foo'
+    val = 2
+
+    def test_ini_file_wins_when_no_args(self):
+        parser, options, args = configglue(self.file, args=[])
+        self.assertEqual(vars(options),
+                         {self.opt: self.val})
+
+    def test_args_win(self):
+        parser, options, args = configglue(self.file,
+                                           args=['', self.arg + '=5'])
+        self.assertEqual(vars(options),
+                         {self.opt: '5'})
+
+    def test_help_is_displayed(self):
+        sys.stdout = StringIO()
+        try:
+            configglue(self.file, args=['', '--help'])
+        except SystemExit:
+            output = sys.stdout.getvalue()
+            sys.stdout = sys.__stdout__
+        self.assertTrue('yadda yadda yadda yadda' in output)
+
+
+class TestCrazyGlue(TestGlue):
+    ini = '''
+[bl-ah]
+foo.default = 3
+foo.help = yadda yadda yadda
+         yadda
+foo.metavar = FOO
+foo.parser = int
+foo = 2
+'''
+    arg = '--bl-ah_foo'
+    opt = 'bl_ah_foo'
+
+
+class TestNoValue(TestGlue):
+    ini = '''
+[blah]
+foo.help = yadda yadda yadda
+         yadda
+foo.metavar = FOO
+foo.parser = int
+foo = 3
+'''
+    val = 3
+
+
+class TestGlue2(TestBase):
+    ini = '[__main__]\na=1\n'
+
+    def test_main(self):
+        parser, options, args = configglue(self.file)
+        self.assertEqual(options.a, '1')
+
+
+class TestGlue3(TestBase):
+    ini = '[x]\na.help=hi\n'
+
+    def test_empty(self):
+        parser, options, args = configglue(self.file)
+        self.assertEqual(options.x_a, '')
+
+    def test_accepts_args_and_filenames(self):
+        parser, options, args = configglue(self.file, 'dummy',
+                                           args=['', '--x_a=1'])
+        self.assertEqual(options.x_a, '1')
+
+
+class TestGlueBool(TestBase):
+    ini = '''[__main__]
+foo.parser=bool
+foo.action=store_true
+
+bar.default = True
+bar.parser = bool
+bar.action = store_false
+'''
+
+    def test_store_true(self):
+        parser, options, args = configglue(self.file, args=['', '--foo'])
+        self.assertEqual(options.foo, True)
+
+    def test_store_false(self):
+        parser, options, args = configglue(self.file, args=['', '--bar'])
+        self.assertEqual(options.bar, False)
+
+
+class TestGlueLines(TestBase):
+    ini = '''[__main__]
+foo.parser = lines
+foo.action = append
+
+bar = a
+      b
+bar.parser = lines
+bar.action = append
+'''
+
+    def test_nothing(self):
+        parser, options, args = configglue(self.file)
+        self.assertEqual(options.foo, [])
+
+    def test_no_append(self):
+        parser, options, args = configglue(self.file)
+        self.assertEqual(options.bar, ['a', 'b'])
+
+    def test_append_on_empty(self):
+        parser, options, args = configglue(self.file, args=['', '--foo=x'])
+        self.assertEqual(options.foo, ['x'])
+
+    def test_append(self):
+        parser, options, args = configglue(self.file, args=['', '--bar=x'])
+        self.assertEqual(options.bar, ['a', 'b', 'x'])
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          ###############################################################################
+#
+# configglue -- glue for your apps' configuration
+#
+# A library for simple, DRY configuration of applications
+#
+# (C) 2009--2011 by Canonical Ltd.
+# by John R. Lenton <john.lenton@canonical.com>
+# and Ricardo Kirkner <ricardo.kirkner@canonical.com>
+#
+# Released under the BSD License (see the file LICENSE)
+#
+# For bug reports, support, and new releases: http://launchpad.net/configglue
+#
+###############################################################################
+
+# in testfiles, putting docstrings on methods messes up with the
+# runner's output, so pylint: disable-msg=C0111
+
+import unittest
+
+from configglue.inischema import parsers
+
+
+class TestParsers(unittest.TestCase):
+    def test_bool(self):
+        for value in ('true', '1', 'on', 'yes',
+                      'True', 'YES', 'oN'):
+            self.assertEqual(parsers.bool_parser(value), True)
+        for value in ('false', '0', 'off', 'no',
+                      'faLSE', 'No', 'oFf'):
+            self.assertEqual(parsers.bool_parser(value), False)
+        for value in ('xyzzy', '', '-1', '0.', '0.1'):
+            self.assertRaises(ValueError, parsers.bool_parser, value)
+
+    def test_bool_not_string(self):
+        self.assertEqual(parsers.bool_parser(1), True)
+
+    def test_bool_is_None(self):
+        self.assertEqual(parsers.bool_parser(None), False)
+
+    def test_lines(self):
+        self.assertEqual(parsers.lines('abc\ndef'), ['abc', 'def'])
+
+    def test_lines_not_string(self):
+        self.assertEqual(parsers.lines(42), 42)
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       # Copyright (C) 2006 Collabora Ltd. <http://www.collabora.co.uk/>
+#
+# Permission is hereby granted, free of charge, to any person
+# obtaining a copy of this software and associated documentation
+# files (the "Software"), to deal in the Software without
+# restriction, including without limitation the rights to use, copy,
+# modify, merge, publish, distribute, sublicense, and/or sell copies
+# of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be
+# included in all copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+# EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+# MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+# NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT
+# HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY,
+# WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+# DEALINGS IN THE SOFTWARE.
+
+"""Base definitions, etc. for main loop integration.
+
+"""
+
+import _dbus_bindings
+
+NativeMainLoop = _dbus_bindings.NativeMainLoop
+
+NULL_MAIN_LOOP = _dbus_bindings.NULL_MAIN_LOOP
+"""A null mainloop which doesn't actually do anything.
+
+For advanced users who want to dispatch events by hand. This is almost
+certainly a bad idea - if in doubt, use the GLib main loop found in
+`dbus.mainloop.glib`.
+"""
+
+WATCH_READABLE = _dbus_bindings.WATCH_READABLE
+"""Represents a file descriptor becoming readable.
+Used to implement file descriptor watches."""
+
+WATCH_WRITABLE = _dbus_bindings.WATCH_WRITABLE
+"""Represents a file descriptor becoming readable.
+Used to implement file descriptor watches."""
+
+WATCH_HANGUP = _dbus_bindings.WATCH_HANGUP
+"""Represents a file descriptor reaching end-of-file.
+Used to implement file descriptor watches."""
+
+WATCH_ERROR = _dbus_bindings.WATCH_ERROR
+"""Represents an error condition on a file descriptor.
+Used to implement file descriptor watches."""
+
+__all__ = (
+           # Imported into this module
+           'NativeMainLoop', 'WATCH_READABLE', 'WATCH_WRITABLE',
+           'WATCH_HANGUP', 'WATCH_ERROR', 'NULL_MAIN_LOOP',
+
+           # Submodules
+           'glib'
+           )
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                ###############################################################################
+#
+# configglue -- glue for your apps' configuration
+#
+# A library for simple, DRY configuration of applications
+#
+# (C) 2009--2011 by Canonical Ltd.
+# by John R. Lenton <john.lenton@canonical.com>
+# and Ricardo Kirkner <ricardo.kirkner@canonical.com>
+#
+# Released under the BSD License (see the file LICENSE)
+#
+# For bug reports, support, and new releases: http://launchpad.net/configglue
+#
+###############################################################################
+
+# in testfiles, putting docstrings on methods messes up with the
+# runner's output, so pylint: disable-msg=C0111
+
+import unittest
+from StringIO import StringIO
+from ConfigParser import RawConfigParser
+
+from configglue.inischema.typed import TypedConfigParser
+
+
+marker = object()
+
+
+def some_parser(value):
+    if value == 'marker':
+        return marker
+    else:
+        return None
+
+
+class BaseTest(unittest.TestCase):
+    """ Base class to keep common set-up """
+    def setUp(self):
+        self.config_string = '''
+[xyzzy]
+foo.parser = complex
+foo.default = 1j
+
+bar.parser = int
+bar.default = -1
+bar = 2
+
+baz.parser = some.parser
+baz = marker
+
+baz2.parser = more.parser
+baz2 = -1
+
+meep = \xe1rbol
+meep.parser = unicode
+meep.parser.args = latin1
+
+quux = \xe1rbol
+quux.parser = unicode
+quux.parser.args = utf-8
+                   replace
+
+thud.help = this is the help for thud
+
+woof.default = marker
+woof.default.parser = some.parser
+woof.parser = bool
+'''
+        self.config = TypedConfigParser()
+        self.config.readfp(StringIO(self.config_string))
+
+
+class TestBackwardsCompat(BaseTest):
+    """ rather basic backwards compatibility checker
+    """
+    def test_config_before_parse_is_plain(self):
+        rawConfig = RawConfigParser()
+        rawConfig.readfp(StringIO(self.config_string))
+        self.assertEqual([(section, sorted(self.config.items(section)))
+                          for section in self.config.sections()],
+                         [(section, sorted(rawConfig.items(section)))
+                          for section in rawConfig.sections()])
+
+
+class TestParserd(BaseTest):
+    """Test the different parsing situations"""
+    def test_some_builtin_parser(self):
+        self.config.parse('xyzzy', 'bar')
+        self.assertEqual(self.config.get('xyzzy', 'bar').value, 2)
+
+    def test_add_second_custom_parser_fails(self):
+        self.config.add_parser('some.parser', some_parser)
+        self.assertRaises(ValueError, self.config.add_parser,
+                          'some.parser', some_parser)
+
+    def test_custom_parser(self):
+        self.config.add_parser('some.parser', some_parser)
+        self.config.parse('xyzzy', 'baz')
+        self.assertEqual(self.config.get('xyzzy', 'baz').value, marker)
+
+    def test_value_is_default_if_empty(self):
+        self.config.parse('xyzzy', 'foo')
+        self.assertEqual(self.config.get('xyzzy', 'foo').value, 1j)
+
+    def test_parse_default_parser(self):
+        self.config.add_parser('some.parser', some_parser)
+        self.config.parse('xyzzy', 'woof')
+        self.assertTrue(self.config.get('xyzzy', 'woof').value)
+
+    def test_parse_all_parses_all(self):
+        self.config.add_parser('some.parser', some_parser)
+        self.config.add_parser('more.parser', some_parser)
+        self.config.parse_all()
+        self.assertEqual([(section, [(k, v.value) for (k, v) in
+                                     sorted(self.config.items(section))])
+                          for section in self.config.sections()],
+                         [('xyzzy', [('bar', 2),
+                                     ('baz', marker),
+                                     ('baz2', None),
+                                     ('foo', 1j),
+                                     ('meep', u'\xe1rbol'),
+                                     ('quux', unicode('\xe1rbol', 'utf-8',
+                                                      'replace')),
+                                     ('thud', None),
+                                     ('woof', True),
+                                     ])])
+
+    def test_add_multiple_parsers(self):
+        self.config.add_parsers(('some.parser', some_parser),
+                                ('more.parser', some_parser))
+        self.config.parse('xyzzy', 'baz')
+        self.config.parse('xyzzy', 'baz2')
+        self.assertEqual(self.config.get('xyzzy', 'baz').value, marker)
+        self.assertEqual(self.config.get('xyzzy', 'baz2').value, None)
+
+    def test_add_mutliple_with_repeat_without_clobber(self):
+        self.assertRaises(ValueError,
+                          self.config.add_parsers,
+                          ('some.parser', some_parser),
+                          ('some.parser', some_parser))
+
+    def test_add_multiple_with_repeat_with_clobber(self):
+        self.config.add_parsers(('some.parser', some_parser),
+                                ('some.parser', bool, True))
+        self.config.parse('xyzzy', 'baz')
+        self.assertEqual(self.config.get('xyzzy', 'baz').value, True)
+
+
+if __name__ == '__main__':
+    unittest.main()
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                # Copyright (C) 2004 Anders Carlsson
+# Copyright (C) 2004-2006 Red Hat Inc. <http://www.redhat.com/>
+# Copyright (C) 2005-2006 Collabora Ltd. <http://www.collabora.co.uk/>
+#
+# Permission is hereby granted, free of charge, to any person
+# obtaining a copy of this software and associated documentation
+# files (the "Software"), to deal in the Software without
+# restriction, including without limitation the rights to use, copy,
+# modify, merge, publish, distribute, sublicense, and/or sell copies
+# of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be
+# included in all copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+# EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+# MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+# NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT
+# HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY,
+# WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+# DEALINGS IN THE SOFTWARE.
+
+"""GLib main loop integration using libdbus-glib."""
+
+__all__ = ('DBusGMainLoop', 'threads_init')
+
+from _dbus_glib_bindings import DBusGMainLoop, gthreads_init
+
+_dbus_gthreads_initialized = False
+def threads_init():
+    """Initialize threads in dbus-glib, if this has not already been done.
+
+    This must be called before creating a second thread in a program that
+    uses this module.
+    """
+    global _dbus_gthreads_initialized
+    if not _dbus_gthreads_initialized:
+        gthreads_init()
+        _dbus_gthreads_initialized = True
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   # -*- Mode:Python; indent-tabs-mode:nil; tab-width:4 -*-
+#
+# Copyright 2002 Ben Escoto <ben@emerose.org>
+# Copyright 2007 Kenneth Loafman <kenneth@loafman.com>
+#
+# This file is part of duplicity.
+#
+# Duplicity is free software; you can redistribute it and/or modify it
+# under the terms of the GNU General Public License as published by the
+# Free Software Foundation; either version 2 of the License, or (at your
+# option) any later version.
+#
+# Duplicity is distributed in the hope that it will be useful, but
+# WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+# General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with duplicity; if not, write to the Free Software Foundation,
+# Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
+
+"""
+Imports of backends should not be done directly in this module.  All
+backend imports are done via import_backends() in backend.py.  This
+file is only to instantiate the duplicity.backends module itself.
+"""
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     # -*- Mode:Python; indent-tabs-mode:nil; tab-width:4 -*-
+#
+# Copyright 2002 Ben Escoto <ben@emerose.org>
+# Copyright 2007 Kenneth Loafman <kenneth@loafman.com>
+# Copyright 2011 Henrique Carvalho Alves <hcarvalhoalves@gmail.com>
+#
+# This file is part of duplicity.
+#
+# Duplicity is free software; you can redistribute it and/or modify it
+# under the terms of the GNU General Public License as published by the
+# Free Software Foundation; either version 2 of the License, or (at your
+# option) any later version.
+#
+# Duplicity is distributed in the hope that i
